@@ -410,9 +410,9 @@ public class DBTest extends TestCase {
 
             stats = db.getProperty("leveldb.stats");
             System.out.println(stats);
-            assertTrue(stats.contains("1        0        0         0"));
+            assertTrue(stats.contains("1        0        0         0") ||
+                    stats.contains("1        0        0         1")); // may take 1 sec on arm64 eMMC partition
             assertTrue(stats.contains("2        0        0         0"));
-
         }
         db.close();
     }

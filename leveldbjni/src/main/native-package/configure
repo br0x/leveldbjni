@@ -15289,7 +15289,7 @@ LDFLAGS="$LDFLAGS $JNI_EXTRA_LDFLAGS -release 99-master-SNAPSHOT"
 ## -----------------------------------------------------
 ## Generate the files
 ## -----------------------------------------------------
-am__api_version='1.14'
+am__api_version='1.15'
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether build environment is sane" >&5
 $as_echo_n "checking whether build environment is sane... " >&6; }

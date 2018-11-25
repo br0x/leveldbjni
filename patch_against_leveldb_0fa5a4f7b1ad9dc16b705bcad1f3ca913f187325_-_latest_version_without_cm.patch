@@ -1,0 +1,338 @@
+Index: db/memtable.cc
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- db/memtable.cc	(date 1521219995000)
++++ db/memtable.cc	(date 1543067815000)
+@@ -105,7 +105,7 @@
+   table_.Insert(buf);
+ }
+ 
+-bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
++bool MemTable::Get(const LookupKey& key, Value* value, Status* s) {
+   Slice memkey = key.memtable_key();
+   Table::Iterator iter(&table_);
+   iter.Seek(memkey.data());
+Index: include/leveldb/db.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- include/leveldb/db.h	(date 1521219995000)
++++ include/leveldb/db.h	(date 1543067815000)
+@@ -39,6 +39,17 @@
+   Range(const Slice& s, const Slice& l) : start(s), limit(l) { }
+ };
+ 
++// Abstract holder for a DB value.
++// This allows callers to manage their own value buffers and have
++// DB values copied directly into those buffers.
++class Value {
++ public:
++  virtual Value& assign(const char* data, size_t size) = 0;
++
++ protected:
++  virtual ~Value();
++};
++
+ // A DB is a persistent ordered map from keys to values.
+ // A DB is safe for concurrent access from multiple threads without
+ // any external synchronization.
+@@ -84,6 +95,9 @@
+   virtual Status Get(const ReadOptions& options,
+                      const Slice& key, std::string* value) = 0;
+ 
++  virtual Status Get(const ReadOptions& options,
++                     const Slice& key, Value* value) = 0;
++
+   // Return a heap-allocated iterator over the contents of the database.
+   // The result of NewIterator() is initially invalid (caller must
+   // call one of the Seek methods on the iterator before using it).
+@@ -143,6 +157,12 @@
+   //    db->CompactRange(NULL, NULL);
+   virtual void CompactRange(const Slice* begin, const Slice* end) = 0;
+ 
++  // Suspends the background compaction thread.  This methods
++  // returns once suspended.
++  virtual void SuspendCompactions() = 0;
++  // Resumes a suspended background compation thread.
++  virtual void ResumeCompactions() = 0;
++
+  private:
+   // No copying allowed
+   DB(const DB&);
+Index: db/db_impl.cc
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- db/db_impl.cc	(date 1521219995000)
++++ db/db_impl.cc	(date 1543067815000)
+@@ -83,6 +83,22 @@
+   }
+ };
+ 
++Value::~Value() {}
++
++class StringValue : public Value {
++ public:
++  explicit StringValue(std::string& val) : value_(val) {}
++  ~StringValue() {}
++
++  StringValue& assign(const char* data, size_t size) {
++    value_.assign(data, size);
++    return *this;
++  }
++
++ private:
++  std::string& value_;
++};
++
+ // Fix user-supplied options to be reasonable
+ template <class T, class V>
+ static void ClipToRange(T* ptr, V minvalue, V maxvalue) {
+@@ -133,6 +149,9 @@
+       table_cache_(new TableCache(dbname_, options_, TableCacheSize(options_))),
+       db_lock_(NULL),
+       shutting_down_(NULL),
++      suspend_cv(&suspend_mutex),
++      suspend_count(0),
++      suspended(false),
+       background_work_finished_signal_(&mutex_),
+       mem_(NULL),
+       imm_(NULL),
+@@ -1116,6 +1135,13 @@
+ Status DBImpl::Get(const ReadOptions& options,
+                    const Slice& key,
+                    std::string* value) {
++  StringValue stringvalue(*value);
++  return DBImpl::Get(options, key, &stringvalue);
++}
++
++Status DBImpl::Get(const ReadOptions& options,
++                   const Slice& key,
++                   Value* value) {
+   Status s;
+   MutexLock l(&mutex_);
+   SequenceNumber snapshot;
+@@ -1479,6 +1505,41 @@
+   }
+ }
+ 
++void DBImpl::SuspendCompactions() {
++  MutexLock l(& suspend_mutex);
++  env_->Schedule(&SuspendWork, this);
++  suspend_count++;
++  while( !suspended ) {
++    suspend_cv.Wait();
++  }
++}
++
++void DBImpl::SuspendWork(void* db) {
++  reinterpret_cast<DBImpl*>(db)->SuspendCallback();
++}
++
++void DBImpl::SuspendCallback() {
++    MutexLock l(&suspend_mutex);
++    Log(options_.info_log, "Compactions suspended");
++    suspended = true;
++    suspend_cv.SignalAll();
++    while( suspend_count > 0 ) {
++        suspend_cv.Wait();
++    }
++    suspended = false;
++    suspend_cv.SignalAll();
++    Log(options_.info_log, "Compactions resumed");
++}
++
++void DBImpl::ResumeCompactions() {
++    MutexLock l(&suspend_mutex);
++    suspend_count--;
++    suspend_cv.SignalAll();
++    while( suspended ) {
++      suspend_cv.Wait();
++    }
++}
++
+ // Default implementations of convenience methods that subclasses of DB
+ // can call if they wish
+ Status DB::Put(const WriteOptions& opt, const Slice& key, const Slice& value) {
+Index: include/leveldb/slice.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- include/leveldb/slice.h	(date 1521219995000)
++++ include/leveldb/slice.h	(date 1543060796000)
+@@ -78,7 +78,6 @@
+             (memcmp(data_, x.data_, x.size_) == 0));
+   }
+ 
+- private:
+   const char* data_;
+   size_t size_;
+ 
+Index: build_detect_platform
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- build_detect_platform	(date 1521219995000)
++++ build_detect_platform	(date 1543060796000)
+@@ -254,8 +254,9 @@
+ echo "PLATFORM=$PLATFORM" >> $OUTPUT
+ echo "PLATFORM_LDFLAGS=$PLATFORM_LDFLAGS" >> $OUTPUT
+ echo "PLATFORM_LIBS=$PLATFORM_LIBS" >> $OUTPUT
+-echo "PLATFORM_CCFLAGS=$PLATFORM_CCFLAGS" >> $OUTPUT
+-echo "PLATFORM_CXXFLAGS=$PLATFORM_CXXFLAGS" >> $OUTPUT
++echo "PLATFORM_CCFLAGS=$PLATFORM_CCFLAGS $PLATFORM_SHARED_CFLAGS" >> $OUTPUT
++echo "PLATFORM_CXXFLAGS=$PLATFORM_CXXFLAGS $PLATFORM_SHARED_CFLAGS" >> $OUTPUT
++# probably need to patch next line too
+ echo "PLATFORM_SHARED_CFLAGS=$PLATFORM_SHARED_CFLAGS" >> $OUTPUT
+ echo "PLATFORM_SHARED_EXT=$PLATFORM_SHARED_EXT" >> $OUTPUT
+ echo "PLATFORM_SHARED_LDFLAGS=$PLATFORM_SHARED_LDFLAGS" >> $OUTPUT
+Index: db/db_test.cc
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- db/db_test.cc	(date 1521219995000)
++++ db/db_test.cc	(date 1543067815000)
+@@ -1964,6 +1964,10 @@
+ 
+   explicit ModelDB(const Options& options): options_(options) { }
+   ~ModelDB() { }
++
++  virtual void SuspendCompactions() {}
++  virtual void ResumeCompactions() {}
++
+   virtual Status Put(const WriteOptions& o, const Slice& k, const Slice& v) {
+     return DB::Put(o, k, v);
+   }
+@@ -1975,6 +1979,13 @@
+     assert(false);      // Not implemented
+     return Status::NotFound(key);
+   }
++
++  virtual Status Get(const ReadOptions& options,
++                     const Slice& key, Value* value) {
++    assert(false);      // Not implemented
++    return Status::NotFound(key);
++  }
++
+   virtual Iterator* NewIterator(const ReadOptions& options) {
+     if (options.snapshot == NULL) {
+       KVMap* saved = new KVMap;
+Index: util/bloom_test.cc
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- util/bloom_test.cc	(date 1521219995000)
++++ util/bloom_test.cc	(date 1543068014000)
+@@ -142,7 +142,7 @@
+       fprintf(stderr, "False positives: %5.2f%% @ length = %6d ; bytes = %6d\n",
+               rate*100.0, length, static_cast<int>(FilterSize()));
+     }
+-    ASSERT_LE(rate, 0.02);   // Must not be over 2%
++    ASSERT_LE(rate, 0.03);   // Must not be over 3%
+     if (rate > 0.0125) mediocre_filters++;  // Allowed, but not too often
+     else good_filters++;
+   }
+Index: db/version_set.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- db/version_set.h	(date 1521219995000)
++++ db/version_set.h	(date 1543067815000)
+@@ -69,7 +69,7 @@
+     FileMetaData* seek_file;
+     int seek_file_level;
+   };
+-  Status Get(const ReadOptions&, const LookupKey& key, std::string* val,
++  Status Get(const ReadOptions&, const LookupKey& key, Value* val,
+              GetStats* stats);
+ 
+   // Adds "stats" into the current state.  Returns true if a new
+Index: db/db_impl.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- db/db_impl.h	(date 1521219995000)
++++ db/db_impl.h	(date 1543067815000)
+@@ -35,12 +35,17 @@
+   virtual Status Get(const ReadOptions& options,
+                      const Slice& key,
+                      std::string* value);
++  virtual Status Get(const ReadOptions& options,
++                     const Slice& key,
++                     Value* value);
+   virtual Iterator* NewIterator(const ReadOptions&);
+   virtual const Snapshot* GetSnapshot();
+   virtual void ReleaseSnapshot(const Snapshot* snapshot);
+   virtual bool GetProperty(const Slice& property, std::string* value);
+   virtual void GetApproximateSizes(const Range* range, int n, uint64_t* sizes);
+   virtual void CompactRange(const Slice* begin, const Slice* end);
++  virtual void SuspendCompactions();
++  virtual void ResumeCompactions();
+ 
+   // Extra methods (for testing) that are not in the public DB interface
+ 
+@@ -134,6 +139,13 @@
+   // Lock over the persistent DB state.  Non-NULL iff successfully acquired.
+   FileLock* db_lock_;
+ 
++  port::Mutex suspend_mutex;
++  port::CondVar suspend_cv;
++  int suspend_count;
++  bool suspended;
++  static void SuspendWork(void* db);
++  void SuspendCallback();
++
+   // State below is protected by mutex_
+   port::Mutex mutex_;
+   port::AtomicPointer shutting_down_;
+Index: db/version_set.cc
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- db/version_set.cc	(date 1521219995000)
++++ db/version_set.cc	(date 1543067815000)
+@@ -262,7 +262,7 @@
+   SaverState state;
+   const Comparator* ucmp;
+   Slice user_key;
+-  std::string* value;
++  Value* value;
+ };
+ }
+ static void SaveValue(void* arg, const Slice& ikey, const Slice& v) {
+@@ -331,7 +331,7 @@
+ 
+ Status Version::Get(const ReadOptions& options,
+                     const LookupKey& k,
+-                    std::string* value,
++                    Value* value,
+                     GetStats* stats) {
+   Slice ikey = k.internal_key();
+   Slice user_key = k.user_key();
+Index: db/memtable.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- db/memtable.h	(date 1521219995000)
++++ db/memtable.h	(date 1543067815000)
+@@ -57,7 +57,7 @@
+   // If memtable contains a deletion for key, store a NotFound() error
+   // in *status and return true.
+   // Else, return false.
+-  bool Get(const LookupKey& key, std::string* value, Status* s);
++  bool Get(const LookupKey& key, Value* value, Status* s);
+ 
+  private:
+   ~MemTable();  // Private since only Unref() should be used to delete it

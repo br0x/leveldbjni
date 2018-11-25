@@ -212,16 +212,22 @@ The following worked for me on:
 
 Then download the snappy, leveldb, and leveldbjni project source code:
 
-    wget http://snappy.googlecode.com/files/snappy-1.0.5.tar.gz
-    tar -zxvf snappy-1.0.5.tar.gz
-    git clone git://github.com/chirino/leveldb.git
-    git clone git://github.com/fusesource/leveldbjni.git
-    export SNAPPY_HOME=`cd snappy-1.0.5; pwd`
+    git clone https://github.com/google/snappy.git 
+    cd snappy
+    git reset --hard ea660b57d65d68d521287c903459b6dd3b2804d0
+
+    git clone git://github.com/google/leveldb.git
+    cd leveldb
+    git reset --hard 0fa5a4f7b1ad9dc16b705bcad1f3ca913f187325
+    
+    git clone git://github.com/br0x/leveldbjni.git
+    
+    export SNAPPY_HOME=`cd snappy; pwd`
     export LEVELDB_HOME=`cd leveldb; pwd`
     export LEVELDBJNI_HOME=`cd leveldbjni; pwd`
 
 <!-- In cygwin that would be
-    export SNAPPY_HOME=$(cygpath -w `cd snappy-1.0.5; pwd`)
+    export SNAPPY_HOME=$(cygpath -w `cd snappy; pwd`)
     export LEVELDB_HOME=$(cygpath -w `cd leveldb; pwd`)
     export LEVELDBJNI_HOME=$(cygpath -w `cd leveldbjni; pwd`)
 -->
@@ -229,17 +235,17 @@ Then download the snappy, leveldb, and leveldbjni project source code:
 Compile the snappy project.  This produces a static library.
 
     cd ${SNAPPY_HOME}
-    ./configure --disable-shared --with-pic
-    make
+    mkdir build
+    cd build && cmake ../ && make
+    make install
+    cp libsnappy.a ..
     
 Patch and Compile the leveldb project.  This produces a static library. 
     
     cd ${LEVELDB_HOME}
-    export LIBRARY_PATH=${SNAPPY_HOME}
-    export C_INCLUDE_PATH=${LIBRARY_PATH}
-    export CPLUS_INCLUDE_PATH=${LIBRARY_PATH}
-    git apply ../leveldbjni/leveldb.patch
-    make libleveldb.a
+    git apply ../leveldbjni/leveldb_0fa5a4f7.patch
+    make
+    cp libleveldb.a ..
 
 Now use maven to build the leveldbjni project. 
     
@@ -251,9 +257,13 @@ Replace ${platform} with one of the following platform identifiers (depending on
 * osx
 * linux32
 * linux64
+* linux64-aarch64
+* linux64-ppc64le
 * win32
 * win64
 * freebsd64
+* sunos64-amd64
+* sunos64-sparcv9
 
 If your platform does not have the right auto-tools levels available
 just copy the `leveldbjni-${version}-SNAPSHOT-native-src.zip` artifact
